@@ -18,6 +18,9 @@ ENV/
 .env
 .env.local
 
+# Session files
+amazon_session.json
+
 # Chrome/Browser session data
 user_session/
 
