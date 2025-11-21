@@ -1,4 +1,4 @@
-# 🥕 Amazon Fresh AI Agent
+# 🥕 Amazon Fresh Fetch AI Agent
 
 <div align="center">
 
