@@ -295,7 +295,7 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ Settings")
     budget = st.number_input("Weekly Budget ($)", value=200.0, step=10.0)
-    pantry = st.text_area("In Your Pantry", "Salt, Pepper, Olive Oil")
+    pantry = st.text_area("In Your Pantry")
     st.divider()
     if st.button("Reset Session"):
         st.session_state.clear()
