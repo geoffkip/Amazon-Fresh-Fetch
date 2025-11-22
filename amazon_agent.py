@@ -30,11 +30,9 @@ class AgentState(TypedDict):
     cart_items: List[str]
     missing_items: List[str]
     user_approved: bool
-    delivery_window: str
     total_cost: float
     budget_limit: float
     pantry_items: str
-    available_delivery_windows: List[str]
 
 class AmazonFreshBrowser:
     def __init__(self):
@@ -111,7 +109,7 @@ class AmazonFreshBrowser:
 
     async def trigger_checkout(self):
         """
-        Simple Logic: Go to cart, click 'Checkout', then stop.
+        Navigates to cart and clicks the initial checkout button.
         """
         st.toast("🛒 Going to Cart...")
         await self.page.goto("https://www.amazon.com/gp/cart/view.html")
@@ -151,19 +149,18 @@ class AmazonFreshBrowser:
 # ==========================================
 
 async def planner_node(state: AgentState):
-    with st.status("🧠 Planner: Designing Schedule (Breakfast, Lunch, Dinner)...", expanded=True) as status:
+    with st.status("🧠 Planner: Designing Schedule...", expanded=True) as status:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.7, google_api_key=os.getenv("GOOGLE_API_KEY"))
         
-        # --- MEAL PLANNER PROMPT  ---
+        # --- MEAL PLAN PROMPT ---
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a meal planning expert. Analyze the request.
-            Return a VALID JSON object with exactly two keys:
-            1. "delivery_preference": (string) e.g. "Friday 5pm" or "Not specified"
-            2. "schedule": (array of objects). Each object must have:
+            Return a VALID JSON object with exactly ONE key:
+            1. "schedule": (array of objects). Each object must have:
                - "day": "Monday", "Tuesday", etc.
-               - "breakfast": "Meal Name and brief description"
-               - "lunch": "Meal Name and brief description"
-               - "dinner": "Meal Name and brief description"
+               - "breakfast": "Meal Name"
+               - "lunch": "Meal Name"
+               - "dinner": "Meal Name"
                - "ingredients_summary": "Brief list of main ingredients"
             """),
             ("human", "{input}")
@@ -178,14 +175,12 @@ async def planner_node(state: AgentState):
             plan_json_str = content
         except:
             plan_json_str = json.dumps({
-                "delivery_preference": "Not specified", 
                 "schedule": [{"day": "Error", "breakfast": "Error", "lunch": "Error", "dinner": response.content}]
             })
         
         status.write("Plan created.")
     
-    data = json.loads(plan_json_str)
-    return {"meal_plan_json": plan_json_str, "delivery_window": data.get('delivery_preference', ''), "total_cost": 0.0}
+    return {"meal_plan_json": plan_json_str, "total_cost": 0.0}
 
 async def extractor_node(state: AgentState):
     with st.status("📑 Extractor: Building Shopping List...", expanded=True) as status:
@@ -300,7 +295,7 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ Settings")
     budget = st.number_input("Weekly Budget ($)", value=200.0, step=10.0)
-    pantry = st.text_area("In Your Pantry")
+    pantry = st.text_area("In Your Pantry", "Salt, Pepper, Olive Oil")
     st.divider()
     if st.button("Reset Session"):
         st.session_state.clear()
@@ -308,10 +303,38 @@ with st.sidebar:
 
 st.title("🥕 Amazon Fresh Fetch AI Agent")
 
-default_prompt = """You are a meal planning expert. Help me build a weekly meal plan for dinner, lunch, and breakfast- I need healthy meals on the table in 30 minutes or less. I’d like it to be a full Monday-Friday meal plan with the links to the recipes and a grocery list included. I’m feeding 2 people, 2 adults. We don't eat pork. I’m accommodating no other allergens or restrictions and try to have a balanced diet focusing that incorporates a variety of whole grains. I'd like it to be heart healthy. I include protein and fresh produce at every meal. We enjoy global flavors like Mexican, Mediterranean, stir fries. I aim for 30 grams of protein at every meal. We usually cook 3 nights a week and use leftovers for lunch or other dinner. One or two lunches can be a sandwich/wrap or salad (something quick as for lunch I typically don't have time. For one meal a week it can be a bit of a longer cooking time. My preferred cooking styles are sheet pan or one saute pan, slow cooker and grilling. I own an Instant Pot and a rice cooker. We would prefer 1-2 vegetarian meals per week. We try to limit red meat to about 1-2 times a week. We eat all other animal products including beef, chicken, tilapia, salmon, cod, shrimp and lamb. Please have the plan include a variety of proteins - so one night chicken, one night beef. We want to include premium cuts while also incorporating budget-friendly staples and limiting specialty ingredients. My preferred grocery stores are amazon fresh, also, food lion, harris teeters and Wegmans. I'd also like you to include breakfast - we typically eat yogurt with whole grain toast or English muffins with peanut butter, jam, avocado and cheese. Some days we also make eggs and some days I sometimes make muffins. Feel free to suggest other healthy breakfast options. Avoiding sugar crashes is also important to me."""
+default_prompt = """You are a world-class nutritionist and meal planning expert. Create a tailored Monday-Friday meal plan (Breakfast, Lunch, Dinner) for 2 adults.
+
+**CORE CONSTRAINTS:**
+- **Dietary:** No Pork. Heart-healthy. Focus on whole grains and fresh produce.
+- **Nutrition:** Aim for ~30g protein per meal. Avoid sugar crashes (low glycemic index).
+- **Time:** Meals must be on the table in 30 mins or less (except 1 "long cook" meal allowed).
+- **Budget:** Mix premium cuts with budget-friendly staples.
+
+**MEAL CADENCE:**
+- **Dinner:** Cook fresh 3 nights a week.
+- **Lunch:** Use leftovers from dinner for most lunches. On non-leftover days, schedule quick sandwiches/wraps/salads.
+- **Breakfast:** Rotate between: Yogurt with whole grain toast, English muffins (PB/Jam/Avocado/Cheese), Eggs, or healthy Muffins.
+
+**PREFERENCES:**
+- **Cuisines:** Mexican, Mediterranean, Stir-fries.
+- **Cooking Style:** Sheet pan, One-pot, Grilling, Slow Cooker.
+- **Appliances Available:** Instant Pot, Rice Cooker.
+- **Protein Variety:** Chicken, Beef, Seafood (Tilapia, Salmon, Cod, Shrimp), Lamb.
+- **Vegetarian:** Include 1-2 vegetarian dinners per week.
+- **Red Meat Limit:** Maximum 1-2 times per week.
+
+**OUTPUT FORMAT:**
+Return a VALID JSON object with exactly one key: "schedule".
+The "schedule" value must be an array of objects, where each object represents a day and contains:
+- "day": "Monday", "Tuesday", etc.
+- "breakfast": "Meal Name & Description"
+- "lunch": "Meal Name & Description"
+- "dinner": "Meal Name & Description"
+- "ingredients_summary": "Brief comma-separated list of main ingredients for that day"""
 
 if "thread_id" not in st.session_state:
-    st.session_state.thread_id = "streamlit_run_v14"
+    st.session_state.thread_id = "streamlit_run_clean"
 
 user_prompt = st.text_area("Meal Prompt", value=default_prompt, height=150)
 
@@ -347,7 +370,6 @@ if current_step == "shopper":
             tabs = st.tabs([day['day'] for day in schedule])
             for tab, day_info in zip(tabs, schedule):
                 with tab:
-                    # --- UPDATED LAYOUT FOR 3 MEALS ---
                     col_a, col_b, col_c = st.columns(3)
                     with col_a:
                         st.markdown(f"""<div class="meal-card"><div class="meal-header"><span class="icon">🥞</span> Breakfast</div><div class="meal-body">{day_info.get('breakfast', 'No meal')}</div></div>""", unsafe_allow_html=True)
@@ -355,7 +377,6 @@ if current_step == "shopper":
                         st.markdown(f"""<div class="meal-card"><div class="meal-header"><span class="icon">🥗</span> Lunch</div><div class="meal-body">{day_info.get('lunch', 'No meal')}</div></div>""", unsafe_allow_html=True)
                     with col_c:
                         st.markdown(f"""<div class="meal-card"><div class="meal-header"><span class="icon">🍳</span> Dinner</div><div class="meal-body">{day_info.get('dinner', 'No meal')}</div></div>""", unsafe_allow_html=True)
-                    
                     st.caption(f"**Key Ingredients:** {day_info.get('ingredients_summary', '')}")
     except:
         st.warning("Showing raw text (JSON parse failed).")
