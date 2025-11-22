@@ -466,7 +466,7 @@ Return a VALID JSON object with exactly one key: "schedule".
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = "streamlit_run_final"
 
-user_prompt = st.text_area("Meal Prompt", value=default_prompt, height=150)
+user_prompt = st.text_area("Meal Prompt", value=default_prompt, height=200)
 
 if st.button("📝 Generate Plan", type="primary"):
     config = {"configurable": {"thread_id": st.session_state.thread_id}}
@@ -554,24 +554,34 @@ elif current_step == "shopper":
     
     raw_list = data.get('shopping_list', [])
     df = pd.DataFrame({"Item": raw_list, "Buy": [True]*len(raw_list)})
-    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    
+    # --- FIXED: REPLACED use_container_width WITH width ---
+    edited_df = st.data_editor(df, num_rows="dynamic", width="stretch")
     final_list = edited_df[edited_df["Buy"] == True]["Item"].tolist()
 
     with c_pdf:
         try:
             pdf_bytes = generate_pdf(data['meal_plan_json'], final_list)
-            st.download_button("📄 Download PDF Plan", data=pdf_bytes, file_name="plan.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button(
+                label="📄 Download PDF Plan",
+                data=pdf_bytes,
+                file_name="plan.pdf",
+                mime="application/pdf",
+                use_container_width=True # Streamlit default still uses this for now
+            )
         except: st.error("PDF Error")
     
     if st.button(f"✅ Shop for {len(final_list)} Items", type="primary"):
+        # Save to DB History
         db.save_plan(user_prompt, data['meal_plan_json'], final_list)
+        
         app.update_state(config, {"shopping_list": final_list})
         async def resume():
             async for event in app.astream(None, config): pass
         asyncio.run(resume())
         st.rerun()
 
-# --- HANDOFF PHASE ---
+# --- HANDOFF PHASE ===
 elif current_step == "checkout":
     st.divider()
     st.subheader("🛑 Automation Complete")
