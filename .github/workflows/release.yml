@@ -1,71 +1,39 @@
-name: Create Release
-
-permissions:
-  contents: write
+name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'  # Triggers on version tags like v1.0.0
+  release:
+    types: [created]
 
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Create release package
-        run: |
-          # Create release directory
-          mkdir -p release/amazon-fresh-fetch
-          
-          # Copy application files
-          cp -r *.py release/amazon-fresh-fetch/
-          cp requirements.txt release/amazon-fresh-fetch/
-          cp config.py release/amazon-fresh-fetch/
-          
-          # Copy scripts folder
-          cp -r scripts release/amazon-fresh-fetch/
-          
-          # Create macOS .app bundle
-          cd release/amazon-fresh-fetch/scripts
-          ./create_mac_app.sh
-          cd ../../..
-          
-          # Create ZIP file
-          cd release
-          zip -r ../amazon-fresh-fetch.zip amazon-fresh-fetch/
-          cd ..
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: amazon-fresh-fetch.zip
-          body: |
-            ## Amazon Fresh Fetch ${{ github.ref_name }}
-            
-            ### 📦 Installation
-            
-            1. Download `amazon-fresh-fetch.zip`
-            2. Extract the ZIP file
-            3. Follow instructions in `scripts/README_INSTALLATION.md`
-            
-            ### 🍎 macOS
-            - **Easy**: Double-click `scripts/Amazon Fresh Fetch.app` (no terminal needed!)
-            - **Manual**: Run `scripts/install.sh` to install, then `scripts/launch.sh` to launch
-            
-            ### 🪟 Windows
-            - Double-click `scripts/install.bat` to install
-            - Double-click `scripts/launch.bat` to launch the app
-            
-            ### 🔑 Requirements
-            - Python 3.8 or higher
-            - Google API Key (https://makersuite.google.com/app/apikey)
-            
-            ### ✨ What's New
-            - See commit history for details
-            
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+    
+    - name: Build installer
+      run: |
+        if [ "${{ runner.os }}" == "Windows" ]; then
+          python build_standalone.py
+        else
+          python3 build_standalone.py
+        fi
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: installer-${{ runner.os }}
+        path: dist/AmazonFreshFetch-Installer*

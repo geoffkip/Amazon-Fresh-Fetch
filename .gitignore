@@ -5,8 +5,13 @@ __pycache__/
 *.so
 .Python
 *.egg-info/
+*.pyc
+*.pyo
+
+# Build artifacts
 dist/
 build/
+*.spec
 
 # Virtual Environment
 .venv/
@@ -24,6 +29,7 @@ amazon_session.json
 # Database files
 agent_data.db
 *.db
+*.db-journal
 
 # Chrome/Browser session data
 user_session/
@@ -34,17 +40,22 @@ user_session/
 *.swp
 *.swo
 *~
+*.code-workspace
 
 # OS
 .DS_Store
 Thumbs.db
+.DS_Store?
 
 # Logs
 *.log
 
-
 # Dev Containers
 .devcontainer/
 
-# macOS App Bundle (generated)
-#*.app/
+# macOS App Bundle (generated, but keep source)
+*.app/
+
+# Temporary files
+*.tmp
+*.temp
