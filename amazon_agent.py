@@ -511,7 +511,7 @@ elif current_step == "checkout":
     1. The agent has filled your cart and clicked **"Check out Fresh Cart"**.
     2. Please switch to the opened Chrome window.
     3. You must manually complete:
-        * **Upsells / Substitutions**
+        * **Substitutions**
         * **Payment Method**
         * **Delivery Schedule**
         * **Final "Place Order"**
