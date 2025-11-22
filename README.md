@@ -15,14 +15,17 @@
 
 ## ✨ Features
 
-- 🧠 **AI Meal Planning**: Generate personalized weekly meal plans using Google Gemini AI
-- 📝 **Smart Shopping Lists**: Automatically extract ingredients from meal plans, accounting for pantry items
-- 🛒 **Automated Cart Management**: Seamlessly search and add items to your Amazon Fresh cart
-- 💰 **Budget Tracking**: Monitor spending in real-time with configurable budget limits
-- 🔄 **Substitution Logic**: Intelligent item substitution when products are unavailable
+- 🧠 **AI Meal Planning**: Generate personalized weekly meal plans using Google Gemini 2.5 Flash AI with detailed nutrition analysis
+- 📝 **Smart Shopping Lists**: Automatically extract ingredients from meal plans with quantity consolidation, accounting for pantry items
+- 🤖 **Intelligent Product Selection**: LLM-powered product matching that analyzes top 3 search results to pick the best value/match
+- 🛒 **Automated Cart Management**: Seamlessly search and add items to your Amazon Fresh cart with real-time price tracking
+- 💰 **Budget Tracking**: Monitor spending in real-time with configurable budget limits and automatic budget cutoffs
+- 📊 **Nutritional Analysis**: Visual charts showing daily calories, protein, carbs, and fat breakdowns
+- 📄 **PDF Export**: Generate downloadable meal plan PDFs with shopping lists and recipe instructions
+- 💾 **History & Persistence**: SQLite database stores meal plans, shopping lists, and settings for easy review
 - 🎯 **Customizable Preferences**: Set dietary restrictions, pantry items, and budget constraints
 - 🍪 **Session Persistence**: Save browser sessions to avoid repeated logins
-- 📊 **Interactive UI**: Beautiful Streamlit interface with real-time progress tracking
+- 🎨 **Interactive UI**: Beautiful Streamlit interface with real-time progress tracking, meal cards, and tabbed weekly views
 
 ## 🏗️ Architecture
 
@@ -34,11 +37,35 @@ User Input → Planner → Extractor → Shopper → Human Review → Checkout
 
 ### Workflow Nodes
 
-1. **Planner Node**: Analyzes user meal preferences and generates a weekly meal plan
-2. **Extractor Node**: Extracts shopping list items, excluding pantry items
-3. **Shopper Node**: Searches Amazon Fresh and adds items to cart with budget tracking
-4. **Human Review Node**: Pauses for user approval before checkout
-5. **Checkout Node**: Navigates to the cart and clicks "Check out Fresh Cart," then terminates to allow manual user completion.
+1. **Planner Node**: 
+   - Analyzes user meal preferences using Google Gemini AI
+   - Generates a structured weekly meal plan with breakfast, lunch, and dinner
+   - Includes detailed ingredients with quantities (lbs, oz, cups, count)
+   - Calculates daily nutritional information (calories, protein, carbs, fat)
+
+2. **Extractor Node**: 
+   - Parses meal plan JSON to extract all ingredients
+   - Consolidates duplicate items by summing quantities
+   - Filters out pantry items that the user already has
+   - Returns a clean, deduplicated shopping list
+
+3. **Shopper Node**: 
+   - Searches Amazon Fresh for each item
+   - Scrapes top 3 search results with titles and prices
+   - Uses LLM to intelligently select the best match/value from options
+   - Adds selected items to cart with real-time budget tracking
+   - Handles missing items and budget cutoffs gracefully
+   - Automatically navigates to checkout when complete
+
+4. **Human Review Node**: 
+   - Pauses workflow for user to review and edit shopping list
+   - Allows manual item removal/addition before shopping begins
+   - Provides PDF download option for meal plan
+
+5. **Checkout Node**: 
+   - Navigates to Amazon cart
+   - Clicks "Check out Fresh Cart" button
+   - Handles checkout initiation, then terminates for manual user completion
 
 ## 🚀 Getting Started
 
@@ -74,11 +101,15 @@ User Input → Planner → Extractor → Shopper → Human Review → Checkout
    ```env
    GOOGLE_API_KEY=your_google_api_key_here
    ```
+   
+   Get your Google API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
 
 5. **Install Playwright browsers**
    ```bash
    playwright install chromium
    ```
+   
+   Note: The first time you run the app, you'll need to manually log in to Amazon in the browser window that opens. Your session will be saved for future runs.
 
 ### Running the Application
 
@@ -86,7 +117,9 @@ User Input → Planner → Extractor → Shopper → Human Review → Checkout
 streamlit run amazon_agent.py
 ```
 
-The application will open in your default browser at `http://localhost:8501`
+The application will open in your default browser (typically at `http://localhost:8501` or `http://localhost:8503`)
+
+**First Run**: A Chrome browser window will open for Amazon Fresh. You'll need to manually log in once. Your session will be saved automatically.
 
 ## 📖 Usage
 
@@ -109,50 +142,61 @@ Create a weekly meal plan for 2 adults with:
 
 ### 3. Review and Edit
 
-- Review the generated meal plan
-- Edit the shopping list (add/remove items)
+- Review the generated meal plan with nutritional charts
+- View meal details in organized day-by-day tabs
+- Edit the shopping list (add/remove items using the data editor)
+- Download a PDF version of your meal plan
 - Confirm to start shopping
 
 ### 4. Automated Shopping
 
 The agent will:
 - Search for each item on Amazon Fresh
-- Add items to your cart
-- Track prices and budget
-- Suggest substitutions for unavailable items
+- Scrape top 3 search results with prices
+- Use AI to intelligently select the best product match/value
+- Add selected items to your cart automatically
+- Track prices and budget in real-time
+- Handle missing items and budget cutoffs gracefully
 
-### 5. Final Review
+### 5. Final Review & Checkout
 
-- Proceed to Cart Checkout
-- Switches to manual user handout mode
-- Review missing items, substitution items, select payment and delivery time
-- Place final order and confirm
+- View summary of cart items, total cost, and budget status
+- Review any missing or skipped items
+- The browser will automatically navigate to checkout
+- Complete payment, delivery time, and final order confirmation manually in the browser window
 
 ## 🛠️ Technology Stack
 
-- **Streamlit**: Web UI framework
-- **LangGraph**: Workflow orchestration and state management
-- **LangChain**: LLM integration
-- **Google Gemini AI**: Meal planning and list extraction
-- **Playwright**: Browser automation
-- **Python**: Core language
+- **Streamlit**: Web UI framework with interactive components
+- **LangGraph**: Workflow orchestration and state management with checkpoints
+- **LangChain**: LLM integration and prompt management
+- **Google Gemini 2.5 Flash**: AI model for meal planning, ingredient extraction, and product selection
+- **Playwright**: Browser automation for Amazon Fresh interaction
+- **SQLite**: Local database for meal plan history and settings
+- **FPDF**: PDF generation for meal plan exports
+- **Pandas**: Data manipulation for nutritional analysis and shopping lists
+- **Python**: Core language (3.8+)
 
 ## 📁 Project Structure
 
 ```
 amazon_agent/
-├── amazon_agent.py          # Main application file
+├── amazon_agent.py          # Main application file with LangGraph workflow
 ├── amazon_session.json       # Browser session storage (gitignored)
+├── agent_data.db            # SQLite database for meal plans & settings (gitignored)
 ├── .env                      # Environment variables (gitignored)
 ├── .gitignore               # Git ignore rules
 ├── requirements.txt         # Python dependencies
+├── user_session/            # Chrome browser session data (gitignored)
 └── README.md               # This file
 ```
 
 ## 🔒 Security & Privacy
 
-- **Session Data**: Browser sessions are stored locally in `amazon_session.json` (not committed to git)
-- **API Keys**: Store your Google API key in `.env` file (not committed to git)
+- **Session Data**: Browser sessions are stored locally in `amazon_session.json` (gitignored)
+- **Database**: SQLite database `agent_data.db` stores meal plans locally (gitignored)
+- **API Keys**: Store your Google API key in `.env` file (gitignored)
+- **Browser Data**: Chrome session data in `user_session/` directory (gitignored)
 - **Credentials**: Never commit sensitive information to the repository
 
 ## ⚙️ Configuration
@@ -183,9 +227,14 @@ List items you already have in your pantry. The agent will exclude these from th
 - Delete the session file to force re-login
 
 ### Items Not Found
-- The agent will attempt substitutions automatically
-- Check the "Missing/Skipped" section in the final review
-- Manually add items if needed
+- The agent uses AI to select the best match from search results
+- Items that can't be matched or exceed budget appear in the "Missing/Skipped" section
+- You can manually add items in the browser window if needed
+
+### Database Issues
+- The SQLite database (`agent_data.db`) is created automatically on first run
+- If you encounter database errors, you can delete `agent_data.db` to start fresh
+- Your meal plan history will be lost if you delete the database
 
 ## 🤝 Contributing
 
