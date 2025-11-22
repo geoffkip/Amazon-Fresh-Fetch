@@ -3,10 +3,14 @@ import os
 import asyncio
 import json
 import re
+import sqlite3
 import pandas as pd
+import altair as alt
+from datetime import datetime
 from dotenv import load_dotenv
-from typing import List, TypedDict, Annotated
+from typing import List, TypedDict, Annotated, Dict
 from operator import add
+from fpdf import FPDF
 
 # LangChain / LangGraph imports
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -20,7 +24,58 @@ from playwright.async_api import async_playwright
 load_dotenv()
 
 # ==========================================
-# 1. SETUP & CLASSES
+# 1. DATABASE MANAGER (SQLite)
+# ==========================================
+class DBManager:
+    def __init__(self, db_name="agent_data.db"):
+        self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        self.create_tables()
+
+    def create_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS settings 
+                     (key TEXT PRIMARY KEY, value TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS meal_plans 
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                      date TEXT, 
+                      prompt TEXT, 
+                      plan_json TEXT, 
+                      shopping_list TEXT)''')
+        self.conn.commit()
+
+    def save_setting(self, key, value):
+        c = self.conn.cursor()
+        c.execute("REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        self.conn.commit()
+
+    def get_setting(self, key, default=""):
+        c = self.conn.cursor()
+        c.execute("SELECT value FROM settings WHERE key=?", (key,))
+        result = c.fetchone()
+        return result[0] if result else default
+
+    def save_plan(self, prompt, plan_json, shopping_list):
+        c = self.conn.cursor()
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        list_str = json.dumps(shopping_list)
+        c.execute("INSERT INTO meal_plans (date, prompt, plan_json, shopping_list) VALUES (?, ?, ?, ?)",
+                  (date_str, prompt, plan_json, list_str))
+        self.conn.commit()
+
+    def get_recent_plans(self, limit=5):
+        c = self.conn.cursor()
+        c.execute("SELECT id, date, prompt, plan_json, shopping_list FROM meal_plans ORDER BY id DESC LIMIT ?", (limit,))
+        return [{"id": r[0], "date": r[1], "prompt": r[2], "json": r[3], "list": json.loads(r[4])} for r in c.fetchall()]
+
+    def delete_all_plans(self):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM meal_plans")
+        self.conn.commit()
+
+db = DBManager()
+
+# ==========================================
+# 2. STATE & BROWSER
 # ==========================================
 
 class AgentState(TypedDict):
@@ -30,7 +85,6 @@ class AgentState(TypedDict):
     cart_items: List[str]
     missing_items: List[str]
     user_approved: bool
-    delivery_window: str
     total_cost: float
     budget_limit: float
     pantry_items: str
@@ -45,16 +99,12 @@ class AmazonFreshBrowser:
 
     async def start(self):
         if self.page: return 
-        
         st.toast("🚀 Launching Browser...")
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=False, slow_mo=1500)
+        self.browser = await self.playwright.chromium.launch(headless=False, slow_mo=1000)
         
         if os.path.exists(self.session_file):
-            self.context = await self.browser.new_context(
-                storage_state=self.session_file,
-                viewport={"width": 1280, "height": 720}
-            )
+            self.context = await self.browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 720})
             st.toast("🍪 Session loaded")
         else:
             self.context = await self.browser.new_context(viewport={"width": 1280, "height": 720})
@@ -63,52 +113,81 @@ class AmazonFreshBrowser:
         await self.page.goto("https://www.amazon.com/alm/storefront?almBrandId=QW1hem9uIEZyZXNo")
         
         try:
-            needs_login = await self.page.locator("#nav-link-accountList-nav-line-1").filter(has_text="Sign in").count() > 0
-        except:
-            needs_login = True
+            if await self.page.locator("#nav-link-accountList-nav-line-1").filter(has_text="Sign in").count() > 0:
+                st.warning("⚠️ Please Log In manually in the browser window!")
+                await asyncio.sleep(60)
+                await self.context.storage_state(path=self.session_file)
+        except: pass
+        st.success("✅ Browser Ready")
 
-        if needs_login:
-            st.warning("⚠️ Please Log In manually in the browser window!")
-            await asyncio.sleep(60)
-            await self.context.storage_state(path=self.session_file)
-        else:
-            st.success("✅ Verified Logged In")
-
-    async def search_and_add(self, item_name: str) -> dict:
+    # --- SMART SHOPPER LOGIC ---
+    async def search_and_get_options(self, item_name: str) -> List[Dict]:
+        """Scrapes top 3 results for LLM decision making"""
         try:
             search_box = self.page.locator('input[id="twotabsearchtextbox"]')
             await search_box.clear()
             await search_box.fill(item_name)
             await search_box.press('Enter')
-            try:
-                await self.page.wait_for_selector('div[data-component-type="s-search-result"]', timeout=5000)
+            try: await self.page.wait_for_selector('div[data-component-type="s-search-result"]', timeout=3000)
             except: pass
 
-            first_result = self.page.locator('div[data-component-type="s-search-result"]').first
-            if await first_result.count() == 0:
-                return {"status": "NOT_FOUND", "price": 0.0}
-
-            price = 0.0
-            try:
-                price_element = first_result.locator(".a-price .a-offscreen").first
-                if await price_element.count() > 0:
-                    txt = await price_element.text_content()
-                    price = float(txt.replace("$", "").replace(",", "").strip())
-            except: pass
-
-            btn = first_result.get_by_role("button", name="Add to cart")
-            if await btn.count() == 0: btn = first_result.get_by_role("button", name="Add", exact=True)
-            if await btn.count() == 0: btn = first_result.locator("button[name='submit.addToCart']")
-            if await btn.count() == 0: btn = first_result.locator("input[name='submit.addToCart']")
-
-            if await btn.count() > 0 and await btn.first.is_visible():
-                await btn.first.click()
-                await asyncio.sleep(2)
-                return {"status": "ADDED", "price": price}
+            # Get first 3 results
+            results = await self.page.locator('div[data-component-type="s-search-result"]').all()
+            options = []
             
-            return {"status": "NOT_FOUND", "price": 0.0}
-        except Exception as e:
-            return {"status": f"ERROR", "price": 0.0}
+            for i, res in enumerate(results[:3]): # Top 3 only
+                try:
+                    title = await res.locator("h2").first.text_content()
+                    price_text = "0.00"
+                    if await res.locator(".a-price .a-offscreen").count() > 0:
+                        price_text = await res.locator(".a-price .a-offscreen").first.text_content()
+                    
+                    options.append({
+                        "index": i,
+                        "title": title.strip(),
+                        "price_str": price_text.strip(),
+                        "price": float(price_text.replace("$", "").replace(",", "").strip()) if "$" in price_text else 0.0
+                    })
+                except: continue
+            
+            return options
+        except: return []
+
+    async def add_specific_item(self, index: int) -> bool:
+        """Clicks 'Add' on the Nth item in the search results"""
+        try:
+            results = await self.page.locator('div[data-component-type="s-search-result"]').all()
+            if index >= len(results): return False
+            
+            target = results[index]
+            
+            btn = target.get_by_role("button", name="Add to cart")
+            if await btn.count() == 0: btn = target.locator("button[name='submit.addToCart']")
+            
+            if await btn.count() > 0:
+                await btn.first.click()
+                await asyncio.sleep(1)
+                return True
+            return False
+        except: return False
+
+    async def trigger_checkout(self):
+        st.toast("🛒 Going to Cart...")
+        await self.page.goto("https://www.amazon.com/gp/cart/view.html")
+        await asyncio.sleep(3)
+        st.toast("➡️ Clicking 'Check out Fresh Cart'...")
+        try:
+            fresh_btn = self.page.get_by_role("button", name="Check out Fresh Cart")
+            if await fresh_btn.count() > 0:
+                await fresh_btn.click()
+                return True
+            # Fallbacks
+            proceed_btn = self.page.locator("input[name='proceedToALMCheckout-QW1hem9uIEZyZXNo']")
+            if await proceed_btn.count() > 0:
+                await proceed_btn.click()
+                return True
+        except: return False
+        return False
 
     async def close(self):
         if self.context: await self.context.storage_state(path=self.session_file)
@@ -116,22 +195,79 @@ class AmazonFreshBrowser:
         if self.playwright: await self.playwright.stop()
 
 # ==========================================
-# 2. DEFINE NODES
+# 3. PDF GENERATOR
+# ==========================================
+class MealPlanPDF(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 16)
+        self.cell(0, 10, 'Amazon Fresh Fetch - Weekly Plan', 0, 1, 'C')
+        self.ln(5)
+    def clean_text(self, text):
+        if not text: return ""
+        return text.encode('latin-1', 'replace').decode('latin-1')
+
+def generate_pdf(meal_json_str: str, shopping_list: List[str]) -> bytes:
+    pdf = MealPlanPDF()
+    pdf.add_page()
+    
+    # Shopping List
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, 'Master Shopping List', 0, 1, 'L')
+    pdf.set_font('Arial', '', 10)
+    col_width = 90
+    for i in range(0, len(shopping_list), 2):
+        item1 = shopping_list[i]
+        item2 = shopping_list[i+1] if i+1 < len(shopping_list) else ""
+        pdf.cell(col_width, 7, f"[ ] {pdf.clean_text(item1)}", 0, 0)
+        if item2: pdf.cell(col_width, 7, f"[ ] {pdf.clean_text(item2)}", 0, 1)
+        else: pdf.ln(7)
+    pdf.ln(10)
+
+    # Recipes
+    try:
+        data = json.loads(meal_json_str)
+        schedule = data.get("schedule", [])
+        for day in schedule:
+            pdf.add_page()
+            pdf.set_font('Arial', 'B', 16)
+            # --- RED DAY HEADERS ---
+            pdf.set_text_color(255, 75, 75)
+            pdf.cell(0, 10, pdf.clean_text(day['day']), 0, 1, 'L')
+            pdf.set_text_color(0, 0, 0)
+            
+            for meal_type in ['breakfast', 'lunch', 'dinner']:
+                meal_data = day.get(meal_type)
+                if isinstance(meal_data, dict):
+                    pdf.set_font('Arial', 'B', 12)
+                    pdf.set_fill_color(240, 240, 240)
+                    pdf.cell(0, 8, f"{meal_type.title()}: {pdf.clean_text(meal_data.get('title', ''))}", 0, 1, 'L', fill=True)
+                    
+                    pdf.set_font('Arial', '', 10)
+                    pdf.multi_cell(0, 5, f"Ing: {pdf.clean_text(meal_data.get('ingredients', ''))}")
+                    pdf.multi_cell(0, 5, f"Steps: {pdf.clean_text(meal_data.get('instructions', ''))}")
+                    pdf.ln(5)
+    except: pass
+    return pdf.output(dest='S').encode('latin-1')
+
+# ==========================================
+# 4. NODES (Smart + Nutrition)
 # ==========================================
 
 async def planner_node(state: AgentState):
-    with st.status("🧠 Planner: Designing Schedule...", expanded=True) as status:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=2.0, google_api_key=os.getenv("GOOGLE_API_KEY"))
+    with st.status("🧠 Planner: Designing Schedule & Analyzing Nutrition...", expanded=True) as status:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.7, google_api_key=os.getenv("GOOGLE_API_KEY"))
         
+        # --- MEAL PLANNER PROMPT ---
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a meal planning expert. Analyze the request.
-            Return a VALID JSON object with exactly two keys:
-            1. "delivery_preference": (string) e.g. "Friday 5pm" or "Not specified"
-            2. "schedule": (array of objects). Each object must have:
-               - "day": "Monday", "Tuesday", etc.
-               - "lunch": "Meal Name and brief description"
-               - "dinner": "Meal Name and brief description"
-               - "ingredients_summary": "Brief list of main ingredients"
+            ("system", """You are a professional chef. Create a JSON object with ONE key: "schedule".
+            The "schedule" is an array of objects. Each object represents a DAY and must have:
+            - "day": "Monday", "Tuesday", etc.
+            - "breakfast": {{ "title": "Name", "ingredients": "Specific list with quantities (e.g. '2 Eggs', '1 cup Oats')", "instructions": "Steps" }}
+            - "lunch": {{ "title": "Name", "ingredients": "Specific list with quantities (e.g. '4oz Chicken', '1 Avocado')", "instructions": "Steps" }}
+            - "dinner": {{ "title": "Name", "ingredients": "Specific list with quantities (e.g. '1lb Beef', '1 cup Rice')", "instructions": "Steps" }}
+            - "nutrition": {{ "calories": 2000, "protein_g": 150, "carbs_g": 200, "fat_g": 70 }}
+            
+            CRITICAL: You must list specific quantities (lbs, oz, cups, count) for every ingredient so the shopping list is accurate.
             """),
             ("human", "{input}")
         ])
@@ -141,35 +277,34 @@ async def planner_node(state: AgentState):
         
         try:
             content = re.sub(r"^```json|```$", "", response.content.strip(), flags=re.MULTILINE).strip()
-            json.loads(content)
+            json.loads(content) 
             plan_json_str = content
         except:
-            plan_json_str = json.dumps({
-                "delivery_preference": "Not specified", 
-                "schedule": [{"day": "Error", "lunch": "Could not parse", "dinner": response.content}]
-            })
+            plan_json_str = json.dumps({"schedule": []})
         
         status.write("Plan created.")
-    
-    data = json.loads(plan_json_str)
-    return {"meal_plan_json": plan_json_str, "delivery_window": data.get('delivery_preference', ''), "total_cost": 0.0}
+    return {"meal_plan_json": plan_json_str, "total_cost": 0.0}
 
 async def extractor_node(state: AgentState):
     with st.status("📑 Extractor: Building Shopping List...", expanded=True) as status:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0, google_api_key=os.getenv("GOOGLE_API_KEY"))
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=os.getenv("GOOGLE_API_KEY"))
         
+        # --- SHOPPING LIST EXTRACTOR PROMPT ---
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Read the meal plan JSON below. Compare against PANTRY: {pantry}. "
-                       "Return SPECIFIC comma-separated list of needed items. Exclude pantry items."),
+            ("system", """You are a rigorous shopping list compiler.
+            1. Read the provided JSON meal plan.
+            2. Extract the 'ingredients' string from EVERY meal.
+            3. Consolidate items by summing up quantities where possible (e.g., "2 eggs" + "2 eggs" = "4 Eggs").
+            4. Compare against PANTRY: {pantry}. Remove any matches.
+            5. STRICT OUTPUT RULE: Return ONLY a comma-separated list of items. Do not speak. Do not add introduction text.
+            """),
             ("human", "{input}")
         ])
         
-        chain = prompt | llm
-        response = await chain.ainvoke({
+        response = await (prompt | llm).ainvoke({
             "input": state["meal_plan_json"], 
             "pantry": state.get("pantry_items", "")
         })
-        
         items = [i.strip() for i in response.content.split(',')]
         status.write(f"Identified {len(items)} items.")
     return {"shopping_list": items}
@@ -180,56 +315,80 @@ async def shopper_node(state: AgentState):
     limit = state.get("budget_limit", 200.0)
     cart, missing = [], []
     
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.2, google_api_key=os.getenv("GOOGLE_API_KEY"))
-
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=os.getenv("GOOGLE_API_KEY"))
     browser_tool = st.session_state.browser_tool
-    status_container = st.status("🛒 Shopper: Searching Amazon Fresh...", expanded=True)
     
+    status_container = st.status("🛒 Shopper: Smart Search Active...", expanded=True)
     if not browser_tool.page: await browser_tool.start()
-
     progress_bar = status_container.progress(0)
     
     for i, item in enumerate(shopping_list):
         status_container.write(f"Looking for: **{item}**")
-        
         if current_total >= limit:
             missing.append(f"{item} (Budget Cut)")
             continue
-
-        result = await browser_tool.search_and_add(item)
         
-        if result["status"] == "ADDED":
-            cart.append(f"{item} (${result['price']:.2f})")
-            current_total += result["price"]
-        elif "NOT_FOUND" in result["status"]:
-            status_container.write(f"⚠️ {item} missing. Substituting...")
-            sub_resp = await llm.ainvoke([HumanMessage(content=f"Item '{item}' unavailable. Name ONE generic substitute.")])
-            sub_item = sub_resp.content.strip()
+        # --- SMART SHOPPER LOGIC ---
+        options = await browser_tool.search_and_get_options(item)
+        
+        if not options:
+            missing.append(item)
+            continue
             
-            retry = await browser_tool.search_and_add(sub_item)
-            if retry["status"] == "ADDED":
-                cart.append(f"{sub_item} (Sub) - ${retry['price']:.2f}")
-                current_total += retry['price']
+        # Ask LLM to pick best value
+        choice_prompt = f"User wants '{item}'. Available Options:\n"
+        for opt in options:
+            choice_prompt += f"Index {opt['index']}: {opt['title']} - ${opt['price_str']}\n"
+        choice_prompt += "Return ONLY the Index integer (0, 1, or 2) of the best match/value. If none match well, return -1."
+        
+        decision_msg = await llm.ainvoke([HumanMessage(content=choice_prompt)])
+        try:
+            choice_idx = int(re.search(r'-?\d+', decision_msg.content).group())
+        except:
+            choice_idx = 0 # Default to first if LLM fails
+            
+        if choice_idx >= 0 and choice_idx < len(options):
+            chosen = options[choice_idx]
+            success = await browser_tool.add_specific_item(choice_idx)
+            if success:
+                cart.append(f"{chosen['title']} (${chosen['price_str']})")
+                current_total += chosen['price']
             else:
                 missing.append(item)
         else:
-            missing.append(item)
+            missing.append(f"{item} (No good match)")
+            
         progress_bar.progress((i + 1) / len(shopping_list))
 
-    status_container.update(label="Shopping Complete!", state="complete", expanded=False)
+    status_container.write("🚚 Initializing Checkout...")
+    await browser_tool.trigger_checkout()
+    status_container.update(label="Shopping Done. Handoff Initiated.", state="complete", expanded=False)
     return {"cart_items": cart, "missing_items": missing, "total_cost": current_total}
 
-async def human_review_node(state: AgentState):
-    return state
-
-async def checkout_node(state: AgentState):
-    if not state.get("user_approved"): return {"messages": [SystemMessage(content="Aborted.")]}
-    return {"messages": [SystemMessage(content=f"Checkout Complete.")]}
+async def human_review_node(state: AgentState): return state
+async def checkout_node(state: AgentState): return {"messages": [SystemMessage(content="Handoff.")]}
 
 # ==========================================
-# 3. GRAPH INIT
+# 5. STREAMLIT UI
 # ==========================================
 
+st.set_page_config(page_title="Amazon Fresh Fetch", page_icon="🥕", layout="wide")
+
+# --- CSS for MEAL CARDS ---
+st.markdown("""
+<style>
+    .meal-card {
+        background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 10px;
+        padding: 20px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        border-left: 8px solid #ff4b4b; height: 100%;
+    }
+    .meal-header { font-size: 1.2rem; font-weight: 700; color: #1f1f1f; margin-bottom: 8px; display: flex; align-items: center; }
+    .meal-body { font-size: 1rem; color: #4f4f4f; line-height: 1.5; }
+    .icon { margin-right: 8px; }
+</style>
+""", unsafe_allow_html=True)
+
+# INIT GRAPH
 if 'graph_app' not in st.session_state:
     workflow = StateGraph(AgentState)
     workflow.add_node("planner", planner_node)
@@ -237,82 +396,76 @@ if 'graph_app' not in st.session_state:
     workflow.add_node("shopper", shopper_node)
     workflow.add_node("human_review", human_review_node)
     workflow.add_node("checkout", checkout_node)
-
     workflow.set_entry_point("planner")
     workflow.add_edge("planner", "extractor")
     workflow.add_edge("extractor", "shopper")
     workflow.add_edge("shopper", "human_review")
     workflow.add_edge("human_review", "checkout")
     workflow.add_edge("checkout", END)
-
-    memory = MemorySaver()
-    app = workflow.compile(checkpointer=memory, interrupt_before=["shopper", "checkout"])
-    
-    st.session_state.graph_app = app
+    st.session_state.graph_app = workflow.compile(checkpointer=MemorySaver(), interrupt_before=["shopper", "checkout"])
     st.session_state.browser_tool = AmazonFreshBrowser()
 
 app = st.session_state.graph_app
-browser_tool = st.session_state.browser_tool
 
-# ==========================================
-# 4. STREAMLIT UI
-# ==========================================
-
-st.set_page_config(page_title="Amazon Fresh Fetch AI Agent", page_icon="🥕", layout="wide")
-
-# --- UPDATED CSS FOR BETTER READABILITY ---
-st.markdown("""
-<style>
-    /* Card Style */
-    .meal-card {
-        background-color: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 10px;
-        padding: 20px;
-        margin-bottom: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border-left: 8px solid #ff4b4b;
-    }
-    
-    /* Headers */
-    .meal-header {
-        font-size: 1.2rem;
-        font-weight: 700;
-        color: #1f1f1f;
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-    }
-    
-    /* Body Text */
-    .meal-body {
-        font-size: 1rem;
-        color: #4f4f4f;
-        line-height: 1.5;
-    }
-    
-    /* Icons */
-    .icon { margin-right: 8px; }
-</style>
-""", unsafe_allow_html=True)
-
+# SIDEBAR
 with st.sidebar:
     st.header("⚙️ Settings")
-    budget = st.number_input("Weekly Budget ($)", value=200.0, step=10.0)
-    pantry = st.text_area("In Your Pantry", "Salt, Pepper, Olive Oil")
+    budget = st.number_input("Weekly Budget ($)", value=float(db.get_setting("budget", "200.0")), step=10.0)
+    
+    # --- EMPTY PANTRY DEFAULT ---
+    pantry_val = db.get_setting("pantry", "")
+    pantry = st.text_area("In Your Pantry", pantry_val)
+    
+    if st.button("Save Settings"):
+        db.save_setting("budget", str(budget))
+        db.save_setting("pantry", pantry)
+        st.success("Saved!")
+        
     st.divider()
-    if st.button("Reset Session"):
-        st.session_state.clear()
+    st.subheader("📜 History")
+    
+    if st.button("🗑️ Clear History"):
+        db.delete_all_plans()
+        st.session_state.pop('history_view', None)
         st.rerun()
+
+    past_plans = db.get_recent_plans()
+    for p in past_plans:
+        if st.button(f"{p['date']} - {len(p['list'])} items", key=f"hist_{p['id']}"):
+            st.session_state.history_view = p
+            st.rerun()
 
 st.title("🥕 Amazon Fresh Fetch AI Agent")
 
-default_prompt = """You are a meal planning expert. Help me build a weekly meal plan for dinner and lunch- I need healthy meals on the table in 30 minutes or less. I’d like it to be a full Monday-Friday meal plan with the links to the recipes and a grocery list included. I’m feeding 2 people, 2 adults. We don't eat pork. I’m accommodating no other allergens or restrictions and try to have a balanced diet focusing that incorporates a variety of whole grains. I'd like it to be heart healthy. I include protein and fresh produce at every meal. We enjoy global flavors like Mexican, Mediterranean, stir fries. I aim for 30 grams of protein at every meal. We usually cook 3 nights a week and use leftovers for lunch or other dinner. One or two lunches can be a sandwich/wrap or salad (something quick as for lunch I typically don't have time. For one meal a week it can be a bit of a longer cooking time. My preferred cooking styles are sheet pan or one saute pan, slow cooker and grilling. I own an Instant Pot and a rice cooker. We would prefer 1-2 vegetarian meals per week. We try to limit red meat to about 1-2 times a week. We eat all other animal products including beef, chicken, tilapia, salmon, cod, shrimp and lamb. Please have the plan include a variety of proteins - so one night chicken, one night beef. We want to include premium cuts while also incorporating budget-friendly staples and limiting specialty ingredients. My preferred grocery stores are amazon fresh, also, food lion, harris teeters and Wegmans. I'd also like you to include breakfast - we typically eat yogurt with whole grain toast or English muffins with peanut butter, jam, avocado and cheese. Some days we also make eggs and some days I sometimes make muffins. Feel free to suggest other healthy breakfast options. Avoiding sugar crashes is also important to me."""
+# --- MEAL PLANNER PROMPT ---
+default_prompt = """You are a world-class nutritionist and meal planning expert. Create a tailored Monday-Friday meal plan (Breakfast, Lunch, Dinner) for 2 adults.
+
+**CORE CONSTRAINTS:**
+- **Dietary:** No Pork. Heart-healthy. Focus on whole grains and fresh produce.
+- **Nutrition:** Aim for ~30g protein per meal. Avoid sugar crashes (low glycemic index).
+- **Time:** Meals must be on the table in 30 mins or less (except 1 "long cook" meal allowed).
+- **Budget:** Mix premium cuts with budget-friendly staples.
+
+**MEAL CADENCE:**
+- **Dinner:** Cook fresh 3 nights a week.
+- **Lunch:** Use leftovers from dinner for most lunches. On non-leftover days, schedule quick sandwiches/wraps/salads.
+- **Breakfast:** Rotate between: Yogurt with whole grain toast, English muffins (PB/Jam/Avocado/Cheese), Eggs, or healthy Muffins.
+
+**PREFERENCES:**
+- **Cuisines:** Mexican, Mediterranean, Stir-fries.
+- **Cooking Style:** Sheet pan, One-pot, Grilling, Slow Cooker.
+- **Appliances Available:** Instant Pot, Rice Cooker.
+- **Protein Variety:** Chicken, Beef, Seafood (Tilapia, Salmon, Cod, Shrimp), Lamb.
+- **Vegetarian:** Include 1-2 vegetarian dinners per week.
+- **Red Meat Limit:** Maximum 1-2 times per week.
+
+**OUTPUT FORMAT:**
+Return a VALID JSON object with exactly one key: "schedule".
+"""
 
 if "thread_id" not in st.session_state:
-    st.session_state.thread_id = "streamlit_run_ui"
+    st.session_state.thread_id = "streamlit_run_final"
 
-# --- INPUT ---
 user_prompt = st.text_area("Meal Prompt", value=default_prompt, height=150)
 
 if st.button("📝 Generate Plan", type="primary"):
@@ -328,116 +481,106 @@ if st.button("📝 Generate Plan", type="primary"):
     asyncio.run(run_to_planning())
     st.rerun()
 
-# --- STATE INSPECTION ---
+# STATE HANDLING
 config = {"configurable": {"thread_id": st.session_state.thread_id}}
 try:
     snapshot = app.get_state(config)
     current_step = snapshot.next[0] if snapshot.next else None
 except: current_step = None
 
-# === STATE 1: PRETTY PLAN REVIEW ===
-if current_step == "shopper":
-    st.divider()
-    st.subheader("📅 Weekly Plan & Shopping List")
-    
-    data = snapshot.values
-    
+# --- HELPER TO RENDER PLAN ---
+def render_plan_ui(plan_json):
     try:
-        plan_data = json.loads(data['meal_plan_json'])
+        plan_data = json.loads(plan_json)
         schedule = plan_data.get('schedule', [])
-        
         if schedule:
+            # NUTRITION
+            nutri_data = []
+            for day in schedule:
+                n = day.get('nutrition', {})
+                nutri_data.append({
+                    "Day": day['day'], "Calories": n.get('calories', 0),
+                    "Protein": n.get('protein_g', 0), "Carbs": n.get('carbs_g', 0), "Fat": n.get('fat_g', 0)
+                })
+            if nutri_data:
+                df_nutri = pd.DataFrame(nutri_data)
+                st.subheader("📊 Nutritional Analysis")
+                c1, c2 = st.columns(2)
+                with c1: st.bar_chart(df_nutri.set_index("Day")["Calories"], color="#ff4b4b")
+                with c2: st.bar_chart(df_nutri.set_index("Day")[["Protein", "Carbs", "Fat"]])
+
+            # MEAL TABS
+            st.subheader("📅 Weekly Plan")
             tabs = st.tabs([day['day'] for day in schedule])
-            
             for tab, day_info in zip(tabs, schedule):
                 with tab:
-                    col_a, col_b = st.columns(2)
+                    c1, c2, c3 = st.columns(3)
+                    def get_title(m): return m.get('title', str(m)) if isinstance(m, dict) else str(m)
+                    with c1:
+                        st.markdown(f"""<div class="meal-card"><div class="meal-header"><span class="icon">🥞</span> Breakfast</div><div class="meal-body">{get_title(day_info.get('breakfast'))}</div></div>""", unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(f"""<div class="meal-card"><div class="meal-header"><span class="icon">🥗</span> Lunch</div><div class="meal-body">{get_title(day_info.get('lunch'))}</div></div>""", unsafe_allow_html=True)
+                    with c3:
+                        st.markdown(f"""<div class="meal-card"><div class="meal-header"><span class="icon">🍳</span> Dinner</div><div class="meal-body">{get_title(day_info.get('dinner'))}</div></div>""", unsafe_allow_html=True)
                     
-                    # LUNCH CARD
-                    with col_a:
-                        st.markdown(f"""
-                        <div class="meal-card">
-                            <div class="meal-header">
-                                <span class="icon">🥗</span> Lunch
-                            </div>
-                            <div class="meal-body">
-                                {day_info.get('lunch', 'No meal')}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                    # DINNER CARD
-                    with col_b:
-                        st.markdown(f"""
-                        <div class="meal-card">
-                            <div class="meal-header">
-                                <span class="icon">🍳</span> Dinner
-                            </div>
-                            <div class="meal-body">
-                                {day_info.get('dinner', 'No meal')}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # INGREDIENTS FOOTER
-                    st.caption(f"**Key Ingredients:** {day_info.get('ingredients_summary', '')}")
-        else:
-            st.write(data['meal_plan_json'])
-    except:
-        st.warning("Showing raw text (JSON parse failed).")
-        st.write(data['meal_plan_json'])
+                    with st.expander("👨‍🍳 View Cooking Instructions"):
+                        st.json(day_info)
+    except Exception as e:
+        st.error(f"Error rendering plan: {e}")
 
-    # EDITABLE SHOPPING LIST
+# --- CHECK VIEW MODE (HISTORY vs NEW) ---
+if 'history_view' in st.session_state:
+    # HISTORY VIEW
+    h_data = st.session_state.history_view
+    st.info(f"📂 Viewing Past Plan from: **{h_data['date']}**")
+    if st.button("⬅️ Back to New Plan"):
+        del st.session_state.history_view
+        st.rerun()
+    render_plan_ui(h_data['json'])
     st.divider()
-    st.subheader("🛒 Confirm Ingredients")
+    st.subheader("🛒 Historic Shopping List")
+    st.dataframe(h_data['list'])
+
+# --- REVIEW PHASE (NEW PLAN) ---
+elif current_step == "shopper":
+    st.divider()
+    data = snapshot.values
+    render_plan_ui(data['meal_plan_json'])
+
+    # SHOPPING LIST
+    st.divider()
+    c_head, c_pdf = st.columns([3, 1])
+    with c_head: st.subheader("🛒 Confirm Ingredients")
     
     raw_list = data.get('shopping_list', [])
-    if not raw_list: raw_list = []
-    
     df = pd.DataFrame({"Item": raw_list, "Buy": [True]*len(raw_list)})
-    
-    edited_df = st.data_editor(
-        df, 
-        num_rows="dynamic", 
-        use_container_width=True,
-        column_config={"Buy": st.column_config.CheckboxColumn("Buy?", default=True)}
-    )
-    
-    final_shopping_list = edited_df[edited_df["Buy"] == True]["Item"].tolist()
+    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    final_list = edited_df[edited_df["Buy"] == True]["Item"].tolist()
 
-    if st.button(f"✅ Shop for {len(final_shopping_list)} Items", type="primary"):
-        app.update_state(config, {"shopping_list": final_shopping_list})
-        async def resume_shopping():
+    with c_pdf:
+        try:
+            pdf_bytes = generate_pdf(data['meal_plan_json'], final_list)
+            st.download_button("📄 Download PDF Plan", data=pdf_bytes, file_name="plan.pdf", mime="application/pdf", use_container_width=True)
+        except: st.error("PDF Error")
+    
+    if st.button(f"✅ Shop for {len(final_list)} Items", type="primary"):
+        db.save_plan(user_prompt, data['meal_plan_json'], final_list)
+        app.update_state(config, {"shopping_list": final_list})
+        async def resume():
             async for event in app.astream(None, config): pass
-        asyncio.run(resume_shopping())
+        asyncio.run(resume())
         st.rerun()
 
-# === STATE 2: CHECKOUT ===
+# --- HANDOFF PHASE ---
 elif current_step == "checkout":
     st.divider()
-    st.subheader("🛑 Final Checkout Review")
-    
+    st.subheader("🛑 Automation Complete")
     data = snapshot.values
     c1, c2, c3 = st.columns(3)
-    c1.metric("Estimated Cost", f"${data['total_cost']:.2f}")
+    c1.metric("Total", f"${data['total_cost']:.2f}")
     c2.metric("Budget", f"${data['budget_limit']:.2f}")
-    c3.metric("Items in Cart", len(data.get('cart_items', [])))
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.success("✅ In Cart")
-        st.dataframe(data.get('cart_items', []), height=300)
-    with col_b:
-        st.error("❌ Missing/Skipped")
-        st.dataframe(data.get('missing_items', []), height=300)
-
-    del_window = data.get("delivery_window", "Not specified")
-    new_window = st.text_input("Confirm Delivery Window:", value=del_window)
-
-    if st.button("✅ Place Order"):
-        app.update_state(config, {"user_approved": True, "delivery_window": new_window})
-        async def finish_checkout():
-            async for event in app.astream(None, config): pass
-        asyncio.run(finish_checkout())
-        st.success(f"Order Complete! Delivery: {new_window}")
-        st.balloons()
+    c3.metric("Cart", len(data.get('cart_items', [])))
+    
+    st.dataframe(data.get('cart_items', []))
+    st.info("👋 **Manual Handoff:** Please complete payment in the open browser window.")
+    if st.button("Close"): asyncio.run(st.session_state.browser_tool.close())

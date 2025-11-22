@@ -21,6 +21,10 @@ ENV/
 # Session files
 amazon_session.json
 
+# Database files
+agent_data.db
+*.db
+
 # Chrome/Browser session data
 user_session/
 
