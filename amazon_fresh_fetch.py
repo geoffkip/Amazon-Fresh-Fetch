@@ -301,7 +301,7 @@ elif current_step == "checkout":
         if cart_c > 0:
             st.dataframe(
                 pd.DataFrame(data.get("cart_items", []), columns=["Item"]),
-                width=None,
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -313,7 +313,7 @@ elif current_step == "checkout":
             st.warning("⚠️ Check these manually.")
             st.dataframe(
                 pd.DataFrame(data.get("missing_items", []), columns=["Item"]),
-                width=None,
+                width="stretch",
                 hide_index=True,
             )
         else:
