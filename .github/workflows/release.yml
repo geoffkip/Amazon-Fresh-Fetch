@@ -1,0 +1,26 @@
+name: Create Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Create Zip Archive
+        run: |
+          zip -r amazon_agent_${{ github.ref_name }}.zip . -x "*.git*" "*.venv*" "*.env" "*__pycache__*" "*user_session*" "*agent_data.db*" "*amazon_session.json*" "*.DS_Store*" "*.devcontainer*"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: amazon_agent_${{ github.ref_name }}.zip
+          generate_release_notes: true

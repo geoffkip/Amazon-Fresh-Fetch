@@ -85,43 +85,59 @@ User Input → Planner → Extractor → Shopper → Human Review → Checkout
 
 ### Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/amazon_agent.git
-   cd amazon_agent
-   ```
+#### Option 1: One-Click Installers (Recommended)
 
-2. **Create and activate a virtual environment**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+We provide simple scripts to automatically install dependencies and run the app.
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+1.  **Download the project** (or git clone).
+2.  **Run the installer for your OS**:
+    *   **Windows**: Double-click `windows/run_app.bat`.
+    *   **Mac**: Double-click `mac/run_app.command`.
+        *   *Note: If you see a security warning on Mac, right-click the file and select "Open".*
 
-4. **Set up environment variables**
-   
-   Create a `.env` file in the project root:
-   ```env
-   GOOGLE_API_KEY=your_google_api_key_here
-   ```
-   
-   Get your Google API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+The script will install everything and launch the app. You can run it again anytime to start the app.
 
-5. **Install Playwright browsers**
-   ```bash
-   playwright install chromium
-   ```
-   
-   Note: The first time you run the app, you'll need to manually log in to Amazon in the browser window that opens. Your session will be saved for future runs.
+#### Option 2: Manual Installation (For Developers)
+
+1.  **Clone the repository**
+    ```bash
+    git clone https://github.com/YOUR_USERNAME/amazon_agent.git
+    cd amazon_agent
+    ```
+
+2.  **Create and activate a virtual environment**
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+    ```
+
+3.  **Install dependencies**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Install Playwright browsers**
+    ```bash
+    playwright install chromium
+    ```
+
+5.  **Set up API Key (Optional)**
+    
+    You can create a `.env` file in the project root:
+    ```env
+    GOOGLE_API_KEY=your_google_api_key_here
+    ```
+    
+    **OR** simply run the app, and it will ask for your key in the sidebar if one is not found.
+    
+    Get your Google API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+
+    Note: The first time you run the app, you'll need to manually log in to Amazon in the browser window that opens. Your session will be saved for future runs.
 
 ### Running the Application
 
 ```bash
-streamlit run amazon_agent.py
+streamlit run amazon_fresh_fetch.py
 ```
 
 The application will open in your default browser (typically at `http://localhost:8501` or `http://localhost:8503`)
@@ -190,14 +206,25 @@ The agent will:
 
 ```
 amazon_agent/
-├── amazon_agent.py          # Main application file with LangGraph workflow
-├── amazon_session.json       # Browser session storage (gitignored)
+├── amazon_fresh_fetch.py    # Main application entry point (UI & Orchestration)
+├── workflow.py              # LangGraph workflow definition
+├── agent.py                 # Agent nodes and logic
+├── browser.py               # Browser automation logic
+├── database.py              # Database interactions
+├── prompts.py               # Centralized AI prompts
+├── ui.py                    # UI components and styles
+├── utils.py                 # Utility functions
+├── config.py                # Configuration settings
+├── pdf_generator.py         # PDF generation logic
+├── amazon_session.json      # Browser session storage (gitignored)
 ├── agent_data.db            # SQLite database for meal plans & settings (gitignored)
-├── .env                      # Environment variables (gitignored)
+├── .env                     # Environment variables (gitignored)
 ├── .gitignore               # Git ignore rules
 ├── requirements.txt         # Python dependencies
 ├── user_session/            # Chrome browser session data (gitignored)
-└── README.md               # This file
+├── mac/                     # Mac installer scripts
+├── windows/                 # Windows installer scripts
+└── README.md                # This file
 ```
 
 ## 🔒 Security & Privacy
