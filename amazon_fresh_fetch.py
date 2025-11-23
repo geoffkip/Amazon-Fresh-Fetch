@@ -21,11 +21,33 @@ from langgraph.graph import END, StateGraph
 # Load environment variables from .env file
 load_dotenv()
 
-# Verify API key is loaded
-if not os.getenv("GOOGLE_API_KEY"):
-    st.error("⚠️ GOOGLE_API_KEY not found!")
-    st.info("Please create a .env file with: GOOGLE_API_KEY=your_key_here")
-    st.stop()
+# ==========================================
+# 1. CREDENTIAL CHECK
+# ==========================================
+def get_api_key():
+    """Get API key from Environment OR Sidebar"""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    
+    if not api_key:
+        # If no .env file, show an input box in the sidebar
+        with st.sidebar:
+            st.divider()
+            st.warning("🔑 API Key Required")
+            api_key = st.text_input(
+                "Enter Gemini API Key:", 
+                type="password", 
+                help="Get one at aistudio.google.com"
+            )
+            if api_key:
+                os.environ["GOOGLE_API_KEY"] = api_key # Set for this session
+                st.success("Key Accepted!")
+                st.rerun() # Rerun to ensure key is picked up
+            else:
+                st.stop() # Stop execution until key is provided
+    return api_key
+
+# Call this early in your script
+GOOGLE_API_KEY = get_api_key()
 
 from agent import (
     AgentState,
