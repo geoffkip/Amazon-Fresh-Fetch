@@ -76,45 +76,14 @@ User Input → Planner → Extractor → Shopper → Human Review → Checkout
 
 ## 🚀 Getting Started
 
-### Installation Options
-
-#### Option 1: Standalone Installer (Recommended - No Dependencies!)
-
-**For Windows:**
-1. Download `AmazonFreshFetch-Installer.exe` from the [Releases](https://github.com/geoffkip/Amazon-Fresh-Fetch/releases) page
-2. Double-click to run (Windows may show security warning - click "More info" → "Run anyway")
-3. The installer will:
-   - Download the app from GitHub
-   - Set up Python environment (included - no Python needed!)
-   - Install all dependencies
-   - Prompt for your Google API key
-4. Launch using `launch.bat` in the installation folder
-
-**For macOS:**
-1. Download `AmazonFreshFetch-Installer.dmg` or standalone executable from [Releases](https://github.com/geoffkip/Amazon-Fresh-Fetch/releases)
-2. Open the DMG or run the executable
-3. If macOS shows security warning: Right-click → "Open" or go to System Preferences → Security & Privacy → "Open Anyway"
-4. Follow the setup wizard (same process as Windows)
-5. Launch using `launch.sh` in `~/AmazonFreshFetch/`
-
-**What you need:**
-- ✅ Internet connection
-- ❌ **NO Python needed** (bundled in installer)
-- ❌ **NO Git needed** (downloads automatically)
-
-📖 **Detailed installation instructions:** See [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)
-
-#### Option 2: Manual Installation (For Developers)
-
 ### Prerequisites
 
 - Python 3.8 or higher
-- Git (for cloning the repository)
 - Google API Key for Gemini AI
 - Amazon account with Amazon Fresh access
 - Chrome/Chromium browser (for Playwright)
 
-### Manual Installation
+### Installation
 
 1. **Clone the repository**
    ```bash
