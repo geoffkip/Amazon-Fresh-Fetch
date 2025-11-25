@@ -156,6 +156,7 @@ async def shopper_node(state: AgentState):
     current_total = state.get("total_cost", 0.0)
     limit = state.get("budget_limit", 200.0)
     cart, missing = [], []
+    
     # Gemini Flash for shopping
     llm = ChatGoogleGenerativeAI(
         model=SHOPPER_MODEL,
@@ -167,51 +168,86 @@ async def shopper_node(state: AgentState):
     status_container = st.status("🛒 Shopper: Smart Search Active...", expanded=True)
     if not browser_tool.page:
         await browser_tool.start()
+    
+    # --- STEP 1: OPTIMIZE QUERIES ---
+    status_container.write("🧠 Optimizing search queries...")
+    query_prompt = (
+        "You are a search query optimizer for Amazon Fresh. \n"
+        "Convert the following shopping list items into the BEST possible search queries.\n"
+        "Remove specific quantities (like '2 cups', '1 lb') unless it's a standard pack size (like '12 pack').\n"
+        "Keep brand names if specified. Keep dietary types (e.g. 'Gluten Free').\n"
+        "Return a JSON object with a key 'queries' which is a list of strings corresponding to the input list.\n\n"
+        f"Input List: {json.dumps(shopping_list)}"
+    )
+    try:
+        q_response = await llm.ainvoke([HumanMessage(content=query_prompt)])
+        content = re.sub(r"^```json|```$", "", q_response.content.strip(), flags=re.MULTILINE).strip()
+        optimized_queries = json.loads(content)["queries"]
+    except Exception:
+        optimized_queries = shopping_list # Fallback
+
     progress_bar = status_container.progress(0)
 
-    for i, item in enumerate(shopping_list):
-        status_container.write(f"Looking for: **{item}**")
+    for i, (original_item, search_term) in enumerate(zip(shopping_list, optimized_queries)):
+        status_container.write(f"Looking for: **{original_item}** (Query: *{search_term}*)")
         if current_total >= limit:
-            missing.append(f"{item} (Budget Cut)")
+            missing.append(f"{original_item} (Budget Cut)")
             continue
 
-        options = await browser_tool.search_and_get_options(item)
+        options = await browser_tool.search_and_get_options(search_term)
 
         if not options:
-            missing.append(item)
-            continue
+            # Fallback to original term if optimized failed
+            if search_term != original_item:
+                 options = await browser_tool.search_and_get_options(original_item)
+            
+            if not options:
+                missing.append(original_item)
+                continue
 
-        choice_prompt = f"User wants '{item}'. Options:\n"
+        # --- STEP 2: ENHANCED SELECTION ---
+        choice_prompt = (
+            f"User wants: '{original_item}'\n"
+            f"Search Query used: '{search_term}'\n\n"
+            "Available Options:\n"
+        )
         for opt in options:
             choice_prompt += (
-                f"Index {opt['index']}: {opt['title']} - ${opt['price_str']}\n"
+                f"Index {opt['index']}: {opt['title']}\n"
+                f"   - Price: ${opt['price_str']}\n"
+                f"   - Rating: {opt.get('rating', 'N/A')} ({opt.get('reviews', '0')} reviews)\n"
             )
         choice_prompt += (
-            "Return ONLY the Index integer (0, 1, or 2) of the best match/value."
+            "\nINSTRUCTIONS:\n"
+            "1. Identify the option that BEST matches the User's request.\n"
+            "2. Consider quantity: If user wants '2 lbs' and option is '1 lb', that's okay (we can buy multiple later, but for now just pick the item).\n"
+            "3. Consider value and ratings.\n"
+            "4. If NO option is a good match, return -1.\n"
+            "5. Return ONLY the Index integer (0, 1, 2...) or -1."
         )
 
         decision_msg = await llm.ainvoke([HumanMessage(content=choice_prompt)])
         try:
             choice_idx = int(re.search(r"-?\d+", decision_msg.content).group())
         except (AttributeError, ValueError):
-            choice_idx = 0
+            choice_idx = 0 # Default to first if unsure
 
-        if 0 <= choice_idx < len(options):
+        if choice_idx >= 0 and choice_idx < len(options):
             chosen = options[choice_idx]
             success = await browser_tool.add_specific_item(choice_idx)
             if success:
                 cart.append(f"{chosen['title']} (${chosen['price_str']})")
                 current_total += chosen['price']
             else:
-                st.toast(f"Smart add failed for {item}. Retrying...")
-                bf_result = await browser_tool.search_and_add(item)
+                st.toast(f"Smart add failed for {original_item}. Retrying...")
+                bf_result = await browser_tool.search_and_add(search_term)
                 if bf_result["status"] == "ADDED":
-                    cart.append(f"{item} (${bf_result['price']:.2f})")
+                    cart.append(f"{original_item} (${bf_result['price']:.2f})")
                     current_total += bf_result["price"]
                 else:
-                    missing.append(item)
+                    missing.append(original_item)
         else:
-            missing.append(f"{item} (No good match)")
+            missing.append(f"{original_item} (No good match)")
 
         progress_bar.progress((i + 1) / len(shopping_list))
 

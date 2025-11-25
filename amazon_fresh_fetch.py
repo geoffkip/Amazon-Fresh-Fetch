@@ -184,8 +184,8 @@ elif current_step == "shopper":
                 mime="application/pdf",
                 use_container_width=True,
             )
-        except Exception:
-            st.error("PDF Error")
+        except Exception as e:
+            st.error(f"PDF Error: {e}")
 
     if st.button(f"✅ Shop for {len(final_list)} Items", type="primary"):
         db.save_plan(user_prompt, data["meal_plan_json"], final_list)

@@ -90,9 +90,14 @@ def generate_pdf(meal_json_str: str, shopping_list: List[str]) -> bytes:
                         fill=True,
                     )
                     pdf.set_font("Arial", "", 10)
+                    
+                    # Force reset X to left margin to ensure full width availability
+                    pdf.set_x(pdf.l_margin)
                     pdf.multi_cell(
                         0, 5, f"Ing: {pdf.clean_text(meal_data.get('ingredients', ''))}"
                     )
+                    
+                    pdf.set_x(pdf.l_margin)
                     pdf.multi_cell(
                         0,
                         5,
@@ -101,4 +106,4 @@ def generate_pdf(meal_json_str: str, shopping_list: List[str]) -> bytes:
                     pdf.ln(5)
     except (json.JSONDecodeError, TypeError):
         pass
-    return pdf.output(dest="S").encode("latin-1")
+    return bytes(pdf.output(dest="S"))

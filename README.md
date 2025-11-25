@@ -255,6 +255,29 @@ List items you already have in your pantry. The agent will exclude these from th
 
 The agent automatically learns from your shopping history stored in the database. When you request a generic item (e.g., "Peanut Butter"), it will suggest the specific brand you've purchased before (e.g., "Smuckers Natural Peanut Butter"). This preference learning improves over time as you create more meal plans.
 
+## 🛠️ Utility Scripts
+
+The `scripts/` directory contains helpful tools for managing your data:
+
+### 1. Import Purchase History (`scripts/import_receipt.py`)
+Train the AI on your past purchases to improve brand recommendations.
+1. Copy the text from your Amazon Fresh order history (or email receipt).
+2. Paste it into the `RAW_DATA` variable in `scripts/import_receipt.py`.
+3. Run the script:
+   ```bash
+   python scripts/import_receipt.py
+   ```
+
+### 2. Inspect Database (`scripts/check_db.py`)
+View the contents of your local database without needing a SQL client.
+- Shows all tables
+- Lists top 20 most frequent items in purchase history
+- Displays saved settings
+- Summarizes recent meal plans
+   ```bash
+   python scripts/check_db.py
+   ```
+
 ## 🐛 Troubleshooting
 
 ### Browser Not Launching

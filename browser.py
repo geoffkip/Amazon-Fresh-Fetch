@@ -94,39 +94,48 @@ class AmazonFreshBrowser:
             await search_box.clear()
             await search_box.fill(item_name)
             await search_box.press("Enter")
+            
             try:
+                # Smart wait for results
                 await self.page.wait_for_selector(
-                    'div[data-component-type="s-search-result"]', timeout=3000
+                    'div[data-component-type="s-search-result"]', 
+                    state="attached", 
+                    timeout=5000
                 )
             except Exception:
-                pass
+                return {"status": "NOT_FOUND", "price": 0.0}
 
             results = await self.page.locator(
                 'div[data-component-type="s-search-result"]'
             ).all()
+            
             if not results:
                 return {"status": "NOT_FOUND", "price": 0.0}
-            target_card = results[0]
+            
+            # Try the first few results in case the first one is unavailable
+            for target_card in results[:3]:
+                price = 0.0
+                try:
+                    price_el = target_card.locator(".a-price .a-offscreen").first
+                    if await price_el.count() > 0:
+                        txt = await price_el.text_content()
+                        price = float(txt.replace("$", "").replace(",", "").strip())
+                except Exception:
+                    pass
 
-            price = 0.0
-            try:
-                price_el = target_card.locator(".a-price .a-offscreen").first
-                if await price_el.count() > 0:
-                    txt = await price_el.text_content()
-                    price = float(txt.replace("$", "").replace(",", "").strip())
-            except Exception:
-                pass
+                # Try multiple button selectors
+                btn = target_card.get_by_role("button", name="Add to cart")
+                if await btn.count() == 0:
+                    btn = target_card.locator("button[name='submit.addToCart']")
+                if await btn.count() == 0:
+                    btn = target_card.locator("input[name='submit.addToCart']")
 
-            btn = target_card.get_by_role("button", name="Add to cart")
-            if await btn.count() == 0:
-                btn = target_card.locator("button[name='submit.addToCart']")
-            if await btn.count() == 0:
-                btn = target_card.locator("input[name='submit.addToCart']")
-
-            if await btn.count() > 0 and await btn.first.is_visible():
-                await btn.first.click()
-                await asyncio.sleep(2)
-                return {"status": "ADDED", "price": price}
+                if await btn.count() > 0 and await btn.first.is_visible():
+                    await btn.first.click()
+                    # Wait for cart count to update or a success message? 
+                    # For now, just a small buffer is safer than nothing, but we rely on the UI not erroring.
+                    await asyncio.sleep(1) 
+                    return {"status": "ADDED", "price": price}
 
             return {"status": "NOT_FOUND", "price": 0.0}
         except Exception:
@@ -135,50 +144,68 @@ class AmazonFreshBrowser:
     # --- SMART SHOPPER LOGIC ---
     async def search_and_get_options(self, item_name: str) -> List[Dict]:
         """
-        Search for an item and return the top 3 results.
+        Search for an item and return the top 5 results with details.
 
         Args:
             item_name (str): The name of the item to search for.
 
         Returns:
-            List[Dict]: A list of dictionaries containing item details (index, title, price).
+            List[Dict]: A list of dictionaries containing item details.
         """
         try:
             search_box = self.page.locator('input[id="twotabsearchtextbox"]')
             await search_box.clear()
             await search_box.fill(item_name)
             await search_box.press("Enter")
+            
             try:
                 await self.page.wait_for_selector(
-                    'div[data-component-type="s-search-result"]', timeout=3000
+                    'div[data-component-type="s-search-result"]', 
+                    state="attached",
+                    timeout=5000
                 )
             except Exception:
-                pass
+                return []
 
             results = await self.page.locator(
                 'div[data-component-type="s-search-result"]'
             ).all()
+            
             options = []
-            for i, res in enumerate(results[:3]):
+            # Check top 5 results
+            for i, res in enumerate(results[:5]):
                 try:
                     title = await res.locator("h2").first.text_content()
+                    
+                    # Price
                     price_text = "0.00"
                     if await res.locator(".a-price .a-offscreen").count() > 0:
-                        price_text = await res.locator(
-                            ".a-price .a-offscreen"
-                        ).first.text_content()
+                        price_text = await res.locator(".a-price .a-offscreen").first.text_content()
+                    
+                    # Rating (e.g. "4.5 out of 5 stars")
+                    rating = "N/A"
+                    rating_el = res.locator("i.a-icon-star-small span.a-icon-alt")
+                    if await rating_el.count() > 0:
+                        rating = await rating_el.first.text_content()
+                    
+                    # Review Count
+                    reviews = "0"
+                    review_el = res.locator("span.a-size-base.s-underline-text")
+                    if await review_el.count() > 0:
+                        reviews = await review_el.first.text_content()
+
                     options.append(
                         {
                             "index": i,
                             "title": title.strip(),
                             "price_str": price_text.strip(),
                             "price": (
-                                float(
-                                    price_text.replace("$", "").replace(",", "").strip()
-                                )
+                                float(price_text.replace("$", "").replace(",", "").strip())
                                 if "$" in price_text
                                 else 0.0
                             ),
+                            "rating": rating.strip(),
+                            "reviews": reviews.strip()
                         }
                     )
                 except Exception:
