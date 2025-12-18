@@ -21,6 +21,29 @@ from database import db
 from prompts import EXTRACTOR_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
 
 
+def get_text_content(content) -> str:
+    """
+    Extract text from LLM response content.
+    
+    Some models return a list of content blocks instead of a string.
+    This helper safely extracts the text in either case.
+    """
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        # Extract text from list of content blocks
+        text_parts = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif hasattr(block, 'text'):
+                text_parts.append(block.text)
+            elif isinstance(block, dict) and 'text' in block:
+                text_parts.append(block['text'])
+        return ''.join(text_parts)
+    return str(content)
+
+
 class AgentState(TypedDict):
     """
     State definition for the agent workflow.
@@ -64,7 +87,7 @@ async def planner_node(state: AgentState):
         # Gemini 2.5 Pro with higher temperature for a bit of creativity
         llm = ChatGoogleGenerativeAI(
             model=PLANNER_MODEL,
-            temperature=2.0,
+            temperature=1.0,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
         # Meal Planner Prompt
@@ -82,8 +105,9 @@ async def planner_node(state: AgentState):
         response = await chain.ainvoke({"input": state["messages"][-1].content})
 
         try:
+            raw_content = get_text_content(response.content)
             content = re.sub(
-                r"^```json|```$", "", response.content.strip(), flags=re.MULTILINE
+                r"^```json|```$", "", raw_content.strip(), flags=re.MULTILINE
             ).strip()
             json.loads(content)
             plan_json_str = content
@@ -107,7 +131,7 @@ async def extractor_node(state: AgentState):
     with st.status("📑 Extractor: Building Shopping List...", expanded=True) as status:
         llm = ChatGoogleGenerativeAI(
             model=EXTRACTOR_MODEL,
-            temperature=0,
+            temperature=1.0,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
 
@@ -131,7 +155,7 @@ async def extractor_node(state: AgentState):
             }
         )
 
-        raw_list = response.content.split(",")
+        raw_list = get_text_content(response.content).split(",")
         items = []
         for i in raw_list:
             clean = re.sub(r"\s+", " ", i).strip()
@@ -160,7 +184,7 @@ async def shopper_node(state: AgentState):
     # Gemini Flash for shopping
     llm = ChatGoogleGenerativeAI(
         model=SHOPPER_MODEL,
-        temperature=0,
+        temperature=1.0,
         google_api_key=os.getenv("GOOGLE_API_KEY"),
     )
     browser_tool = st.session_state.browser_tool
@@ -181,7 +205,8 @@ async def shopper_node(state: AgentState):
     )
     try:
         q_response = await llm.ainvoke([HumanMessage(content=query_prompt)])
-        content = re.sub(r"^```json|```$", "", q_response.content.strip(), flags=re.MULTILINE).strip()
+        raw_content = get_text_content(q_response.content)
+        content = re.sub(r"^```json|```$", "", raw_content.strip(), flags=re.MULTILINE).strip()
         optimized_queries = json.loads(content)["queries"]
     except Exception:
         optimized_queries = shopping_list # Fallback
@@ -228,7 +253,7 @@ async def shopper_node(state: AgentState):
 
         decision_msg = await llm.ainvoke([HumanMessage(content=choice_prompt)])
         try:
-            choice_idx = int(re.search(r"-?\d+", decision_msg.content).group())
+            choice_idx = int(re.search(r"-?\d+", get_text_content(decision_msg.content)).group())
         except (AttributeError, ValueError):
             choice_idx = 0 # Default to first if unsure
 
